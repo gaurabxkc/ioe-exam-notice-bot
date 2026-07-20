@@ -19,11 +19,9 @@ from bs4 import BeautifulSoup
 
 # --- Config -----------------------------------------------------------------
 
-# Candidate notice-list URLs to try, in order. The site has been seen at both
-# hostnames; we try each until one responds with parseable content.
+# The real notice-list page for this site.
 NOTICE_URLS = [
-    "https://exam.ioe.edu.np/Notice/Index/",
-    "https://exam.ioe.tu.edu.np/Notice/Index/",
+    "https://exam.ioe.tu.edu.np/notices",
 ]
 
 STATE_FILE = Path(__file__).parent / "seen_notices.json"
@@ -35,15 +33,15 @@ HEADERS = {
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }
 
-# Matches links like /Notice/Index/3195 and captures the numeric ID
-NOTICE_LINK_RE = re.compile(r"/Notice/Index/(\d+)")
+# Matches links like /notices/13392 and captures the numeric ID
+NOTICE_LINK_RE = re.compile(r"/notices/(\d+)(?:[/?]|$)")
 
 
 # --- Core logic ---------------------------------------------------------------
 
 def fetch_notices():
     """Fetch and parse the notice list. Returns a list of dicts:
-    {"id": "3195", "title": "...", "url": "https://.../Notice/Index/3195"}
+    {"id": "13392", "title": "...", "url": "https://.../notices/13392"}
     ordered as they appear on the page (site lists newest first).
     """
     last_error = None
@@ -70,7 +68,7 @@ def fetch_notices():
             if not title:
                 # fall back to the title attribute or nearby text
                 title = a.get("title", "").strip() or f"Notice {notice_id}"
-            full_url = "https://exam.ioe.edu.np/Notice/Index/" + notice_id
+            full_url = "https://exam.ioe.tu.edu.np/notices/" + notice_id
             notices.append({"id": notice_id, "title": title, "url": full_url})
             seen_ids_on_page.add(notice_id)
 
