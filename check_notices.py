@@ -121,7 +121,42 @@ def send_discord_message(notice):
         print(f"Posted to Discord: {notice['title']}")
 
 
+def run_test_mode():
+    """Send the single most recent real notice to Discord as a test post.
+    Does NOT read or write seen_notices.json, so it has zero effect on
+    normal tracking -- safe to run as many times as you like.
+    """
+    notices = fetch_notices()
+    if not notices:
+        print("No notices found to test with.")
+        return
+    latest = notices[0]
+    print(f"TEST MODE: sending latest notice to Discord: {latest['title']}")
+    payload = {
+        "embeds": [
+            {
+                "title": latest["title"][:250],
+                "url": latest["url"],
+                "description": "🧪 Test message (this notice was already known, sent for testing only)",
+                "color": 15105570,
+            }
+        ]
+    }
+    if not DISCORD_WEBHOOK_URL:
+        print("ERROR: DISCORD_WEBHOOK_URL is not set.", file=sys.stderr)
+        sys.exit(1)
+    resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
+    if resp.status_code >= 300:
+        print(f"Discord webhook failed ({resp.status_code}): {resp.text}", file=sys.stderr)
+        sys.exit(1)
+    print("Test message sent successfully. Check your Discord channel!")
+
+
 def main():
+    if os.environ.get("TEST_MODE", "").lower() == "true":
+        run_test_mode()
+        return
+
     notices = fetch_notices()
     current_ids = {n["id"] for n in notices}
 
