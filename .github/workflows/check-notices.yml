@@ -2,8 +2,10 @@ name: Check IOE Notices
 
 on:
   schedule:
-    # Runs every 15 minutes. GitHub may delay this a bit during busy periods.
-    - cron: "*/15 * * * *"
+    # Runs every 5 minutes -- the practical minimum interval GitHub Actions
+    # supports for scheduled workflows. Actual runs can still lag a few
+    # extra minutes during periods of high GitHub-wide load.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       test_mode:
@@ -13,6 +15,10 @@ on:
 
 permissions:
   contents: write  # needed so the workflow can commit seen_notices.json back
+
+concurrency:
+  group: check-notices
+  cancel-in-progress: false  # let a run finish before the next one starts
 
 jobs:
   check:
