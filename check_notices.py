@@ -110,7 +110,8 @@ def send_discord_message(notice):
                 "title": notice["title"][:250],
                 "url": notice["url"],
                 "description": "📢 New notice published on IOE Examination Control Division",
-                "color": 3447003,
+                # "color": 3447003,
+                "color": 15105570,
             }
         ]
     }
