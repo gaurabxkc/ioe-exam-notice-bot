@@ -100,32 +100,77 @@ def save_seen_ids(ids):
     )
 
 
+def fetch_notice_pdf_url(notice_url):
+    """Visit a single notice's detail page and find the linked PDF, if any."""
+    try:
+        resp = requests.get(notice_url, headers=HEADERS, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"Could not fetch notice detail page {notice_url}: {e}")
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.find_all("a", href=True):
+        if a["href"].lower().split("?")[0].endswith(".pdf"):
+            return a["href"]
+    return None
+
+
+def download_pdf(pdf_url):
+    try:
+        resp = requests.get(pdf_url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        return resp.content
+    except requests.RequestException as e:
+        print(f"Could not download PDF {pdf_url}: {e}")
+        return None
+
+
+MAX_DISCORD_FILE_BYTES = 25 * 1024 * 1024  # Discord's default upload limit
+
+
 def send_discord_message(notice):
     if not DISCORD_WEBHOOK_URL:
         print("WARNING: DISCORD_WEBHOOK_URL not set, skipping Discord post.")
         return
-    payload = {
-        "embeds": [
-            {
-                "title": notice["title"][:250],
-                "url": notice["url"],
-                "description": "📢 New notice published on IOE Examination Control Division",
-                # "color": 3447003,
-                "color": 15105570,
-            }
-        ]
+
+    embed = {
+        "title": notice["title"][:250],
+        "url": notice["url"],
+        "description": "📢 New notice published on IOE Examination Control Division",
+        "color": 3447003,
     }
-    resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
+
+    pdf_url = fetch_notice_pdf_url(notice["url"])
+    pdf_bytes = download_pdf(pdf_url) if pdf_url else None
+
+    if pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES:
+        pdf_filename = pdf_url.rsplit("/", 1)[-1].split("?")[0] or "notice.pdf"
+        payload = {"embeds": [embed]}
+        files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
+        data = {"payload_json": json.dumps(payload)}
+        resp = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files, timeout=60)
+        attached = True
+    else:
+        # No PDF found, or it was too large/failed to download -- fall back
+        # to just linking it in the embed so the person can still get it.
+        if pdf_url:
+            embed["description"] += f"\n[📄 View attached PDF]({pdf_url})"
+        payload = {"embeds": [embed]}
+        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
+        attached = False
+
     if resp.status_code >= 300:
         print(f"Discord webhook failed ({resp.status_code}): {resp.text}", file=sys.stderr)
     else:
-        print(f"Posted to Discord: {notice['title']}")
+        suffix = " (with PDF attached)" if attached else ""
+        print(f"Posted to Discord: {notice['title']}{suffix}")
 
 
 def run_test_mode():
-    """Send the single most recent real notice to Discord as a test post.
-    Does NOT read or write seen_notices.json, so it has zero effect on
-    normal tracking -- safe to run as many times as you like.
+    """Send the single most recent real notice to Discord as a test post,
+    including its PDF attachment if one is found. Does NOT read or write
+    seen_notices.json, so it has zero effect on normal tracking.
     """
     notices = fetch_notices()
     if not notices:
@@ -133,20 +178,33 @@ def run_test_mode():
         return
     latest = notices[0]
     print(f"TEST MODE: sending latest notice to Discord: {latest['title']}")
-    payload = {
-        "embeds": [
-            {
-                "title": latest["title"][:250],
-                "url": latest["url"],
-                "description": "🧪 Test message (this notice was already known, sent for testing only)",
-                "color": 15105570,
-            }
-        ]
-    }
+
     if not DISCORD_WEBHOOK_URL:
         print("ERROR: DISCORD_WEBHOOK_URL is not set.", file=sys.stderr)
         sys.exit(1)
-    resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
+
+    embed = {
+        "title": latest["title"][:250],
+        "url": latest["url"],
+        "description": "🧪 Test message (this notice was already known, sent for testing only)",
+        "color": 15105570,
+    }
+
+    pdf_url = fetch_notice_pdf_url(latest["url"])
+    pdf_bytes = download_pdf(pdf_url) if pdf_url else None
+
+    if pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES:
+        pdf_filename = pdf_url.rsplit("/", 1)[-1].split("?")[0] or "notice.pdf"
+        payload = {"embeds": [embed]}
+        files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
+        data = {"payload_json": json.dumps(payload)}
+        resp = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files, timeout=60)
+    else:
+        if pdf_url:
+            embed["description"] += f"\n[📄 View attached PDF]({pdf_url})"
+        payload = {"embeds": [embed]}
+        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
+
     if resp.status_code >= 300:
         print(f"Discord webhook failed ({resp.status_code}): {resp.text}", file=sys.stderr)
         sys.exit(1)
