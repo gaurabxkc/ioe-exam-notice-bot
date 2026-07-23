@@ -26,7 +26,11 @@ NOTICE_URLS = [
 
 STATE_FILE = Path(__file__).parent / "seen_notices.json"
 
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URLS = [
+    url.strip()
+    for url in os.environ.get("DISCORD_WEBHOOK_URL", "").split(",")
+    if url.strip()
+]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -41,7 +45,7 @@ NOTICE_LINK_RE = re.compile(r"/notices/(\d+)(?:[/?]|$)")
 
 def fetch_notices():
     """Fetch and parse the notice list. Returns a list of dicts:
-    {"id": "13392", "title": "...", "url": "https://.../notices/13392"}
+    {"id": "3195", "title": "...", "url": "https://.../Notice/Index/3195"}
     ordered as they appear on the page (site lists newest first).
     """
     last_error = None
@@ -129,8 +133,39 @@ def download_pdf(pdf_url):
 MAX_DISCORD_FILE_BYTES = 25 * 1024 * 1024  # Discord's default upload limit
 
 
+def post_to_discord(embed, pdf_url, pdf_bytes):
+    """Send the embed (and PDF, if present) to every configured webhook."""
+    if not DISCORD_WEBHOOK_URLS:
+        print("WARNING: DISCORD_WEBHOOK_URL not set, skipping Discord post.")
+        return False
+
+    any_attached = False
+    for webhook_url in DISCORD_WEBHOOK_URLS:
+        if pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES:
+            pdf_filename = pdf_url.rsplit("/", 1)[-1].split("?")[0] or "notice.pdf"
+            payload = {"embeds": [embed]}
+            # Fresh file tuple per request -- requests consumes it on send,
+            # so it can't be reused across multiple webhook posts.
+            files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
+            data = {"payload_json": json.dumps(payload)}
+            resp = requests.post(webhook_url, data=data, files=files, timeout=60)
+            attached = True
+        else:
+            payload = {"embeds": [embed]}
+            resp = requests.post(webhook_url, json=payload, timeout=15)
+            attached = False
+
+        if resp.status_code >= 300:
+            print(f"Discord webhook failed for {webhook_url[:50]}... "
+                  f"({resp.status_code}): {resp.text}", file=sys.stderr)
+        else:
+            any_attached = any_attached or attached
+
+    return any_attached
+
+
 def send_discord_message(notice):
-    if not DISCORD_WEBHOOK_URL:
+    if not DISCORD_WEBHOOK_URLS:
         print("WARNING: DISCORD_WEBHOOK_URL not set, skipping Discord post.")
         return
 
@@ -144,27 +179,12 @@ def send_discord_message(notice):
     pdf_url = fetch_notice_pdf_url(notice["url"])
     pdf_bytes = download_pdf(pdf_url) if pdf_url else None
 
-    if pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES:
-        pdf_filename = pdf_url.rsplit("/", 1)[-1].split("?")[0] or "notice.pdf"
-        payload = {"embeds": [embed]}
-        files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
-        data = {"payload_json": json.dumps(payload)}
-        resp = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files, timeout=60)
-        attached = True
-    else:
-        # No PDF found, or it was too large/failed to download -- fall back
-        # to just linking it in the embed so the person can still get it.
-        if pdf_url:
-            embed["description"] += f"\n[📄 View attached PDF]({pdf_url})"
-        payload = {"embeds": [embed]}
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
-        attached = False
+    if pdf_url and not (pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES):
+        embed["description"] += f"\n[📄 View attached PDF]({pdf_url})"
 
-    if resp.status_code >= 300:
-        print(f"Discord webhook failed ({resp.status_code}): {resp.text}", file=sys.stderr)
-    else:
-        suffix = " (with PDF attached)" if attached else ""
-        print(f"Posted to Discord: {notice['title']}{suffix}")
+    attached = post_to_discord(embed, pdf_url, pdf_bytes)
+    suffix = " (with PDF attached)" if attached else ""
+    print(f"Posted to Discord: {notice['title']}{suffix}")
 
 
 def run_test_mode():
@@ -179,7 +199,7 @@ def run_test_mode():
     latest = notices[0]
     print(f"TEST MODE: sending latest notice to Discord: {latest['title']}")
 
-    if not DISCORD_WEBHOOK_URL:
+    if not DISCORD_WEBHOOK_URLS:
         print("ERROR: DISCORD_WEBHOOK_URL is not set.", file=sys.stderr)
         sys.exit(1)
 
@@ -193,22 +213,11 @@ def run_test_mode():
     pdf_url = fetch_notice_pdf_url(latest["url"])
     pdf_bytes = download_pdf(pdf_url) if pdf_url else None
 
-    if pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES:
-        pdf_filename = pdf_url.rsplit("/", 1)[-1].split("?")[0] or "notice.pdf"
-        payload = {"embeds": [embed]}
-        files = {"file": (pdf_filename, pdf_bytes, "application/pdf")}
-        data = {"payload_json": json.dumps(payload)}
-        resp = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files, timeout=60)
-    else:
-        if pdf_url:
-            embed["description"] += f"\n[📄 View attached PDF]({pdf_url})"
-        payload = {"embeds": [embed]}
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
+    if pdf_url and not (pdf_bytes and len(pdf_bytes) <= MAX_DISCORD_FILE_BYTES):
+        embed["description"] += f"\n[📄 View attached PDF]({pdf_url})"
 
-    if resp.status_code >= 300:
-        print(f"Discord webhook failed ({resp.status_code}): {resp.text}", file=sys.stderr)
-        sys.exit(1)
-    print("Test message sent successfully. Check your Discord channel!")
+    post_to_discord(embed, pdf_url, pdf_bytes)
+    print(f"Test message sent to {len(DISCORD_WEBHOOK_URLS)} webhook(s). Check your Discord channels!")
 
 
 def main():
