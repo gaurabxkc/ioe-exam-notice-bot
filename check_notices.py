@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -37,11 +38,45 @@ HEADERS = {
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }
 
+# The IOE site regularly has short outages (DNS failures, timeouts, 500s).
+# Retry a few times, then skip the run quietly instead of failing the
+# workflow -- the next scheduled run will pick up anything missed.
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_DELAY = 10  # seconds, doubled after each failed attempt
+
+
+class SiteUnavailable(Exception):
+    """The notice site could not be reached (network error or 5xx)."""
+
+
 # Matches links like /notices/13392 and captures the numeric ID
 NOTICE_LINK_RE = re.compile(r"/notices/(\d+)(?:[/?]|$)")
 
 
 # --- Core logic ---------------------------------------------------------------
+
+def get_with_retry(url):
+    """GET a page, retrying on network errors and 5xx responses.
+    Raises SiteUnavailable if every attempt fails.
+    """
+    delay = FETCH_RETRY_DELAY
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=20)
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return resp
+            error = f"{resp.status_code} Server Error for url: {url}"
+        except requests.HTTPError:
+            raise  # 4xx: retrying won't help, surface it as a real failure
+        except requests.RequestException as e:
+            error = e
+        print(f"Attempt {attempt}/{FETCH_ATTEMPTS} failed: {error}")
+        if attempt < FETCH_ATTEMPTS:
+            time.sleep(delay)
+            delay *= 2
+    raise SiteUnavailable(error)
+
 
 def fetch_notices():
     """Fetch and parse the notice list. Returns a list of dicts:
@@ -51,9 +86,8 @@ def fetch_notices():
     last_error = None
     for base_url in NOTICE_URLS:
         try:
-            resp = requests.get(base_url, headers=HEADERS, timeout=20)
-            resp.raise_for_status()
-        except requests.RequestException as e:
+            resp = get_with_retry(base_url)
+        except SiteUnavailable as e:
             last_error = e
             continue
 
@@ -80,7 +114,7 @@ def fetch_notices():
             return notices
 
     if last_error:
-        raise RuntimeError(f"Could not fetch notice page: {last_error}")
+        raise SiteUnavailable(last_error)
     raise RuntimeError(
         "Fetched page(s) successfully but found no notice links. "
         "The site's HTML structure may have changed."
@@ -250,4 +284,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SiteUnavailable as e:
+        # Annotate the run on GitHub but exit 0, so a temporary site outage
+        # doesn't send a "workflow failed" email every 5 minutes.
+        print(f"::warning::IOE notice site unreachable, skipping this run: {e}")
